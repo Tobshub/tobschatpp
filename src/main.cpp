@@ -1,68 +1,49 @@
 #include "hv/HttpMessage.h"
 #include "hv/hstring.h"
+#include "message_reader.cpp"
+#include "rooms.cpp"
 #include <cstdio>
 #include <hv/WebSocketChannel.h>
 #include <hv/WebSocketServer.h>
-#include <sstream>
 #include <string>
 
-using namespace hv;
-using namespace std;
-
-class MessageReader {
-public:
-  string message;
-  stringstream stream;
-  vector<string> tokens;
-  string token;
-
-  MessageReader(string message) {
-    // this->message = message;
-    this->stream = stringstream(message);
-  }
-
-  string read() {
-    if (stream.eof()) { return ""; }
-    std::getline(stream, token, ' ');
-    tokens.push_back(token);
-    return token;
-  }
-
-  string read_to_end() {
-    if (stream.eof()) { return ""; }
-    return stream.str().substr(stream.tellg());
-  }
-};
-
 enum Command {
+  EXIT,
   NICKNAME,
 };
 
 static map<string, Command> commands = {
+    {"/exit", EXIT},
     {"/nickname", NICKNAME},
 };
 
-string handle_command(Command command, MessageReader* reader) {
+static Room GLOBAL("global");
+
+string handle_command(const WebSocketChannelPtr &channel, Command command,
+                      MessageReader *reader) {
   switch (command) {
-    case NICKNAME:
-      return "Set nickname: " + reader->read_to_end();
+  case EXIT:
+    channel->close();
+  case NICKNAME:
+    return "Set nickname: " + reader->read_to_end();
   }
   return "unhandled command";
 }
 
-string dispatch_message(string message) {
+string dispatch_message(const WebSocketChannelPtr &channel, string message) {
   cout << "recv: " << message << endl;
   MessageReader reader(message);
   string command_str = reader.read();
   if (command_str.substr(0, 1) != "/") {
-    return "process message";
+    GLOBAL.broadcast(message);
+    return "sent";
   }
   auto it = commands.find(command_str);
   if (it == commands.end()) {
     return "invalid command";
   }
   Command command = it->second;
-  return handle_command(command, &reader);
+  return handle_command(channel, command, &reader);
 }
 
 int main(int argc, char **argv) {
@@ -72,17 +53,21 @@ int main(int argc, char **argv) {
 
   WebSocketService ws;
 
-  ws.onopen = [](const WebSocketChannelPtr &channel, const HttpRequestPtr &req) {
+  ws.onopen = [](const WebSocketChannelPtr &channel,
+                 const HttpRequestPtr &req) {
     cout << "connected " << channel->id() << endl;
+    GLOBAL.join(channel);
   };
 
-  ws.onmessage = [](const WebSocketChannelPtr &channel, const std::string &message) {
-    string res = dispatch_message(message);
+  ws.onmessage = [](const WebSocketChannelPtr &channel,
+                    const std::string &message) {
+    string res = dispatch_message(channel, message);
     channel->send(res);
   };
 
   ws.onclose = [](const WebSocketChannelPtr &channel) {
     cout << "disconnected " << channel->id() << endl;
+    GLOBAL.leave(channel);
   };
 
   WebSocketServer server;
