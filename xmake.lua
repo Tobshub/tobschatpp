@@ -1,11 +1,15 @@
 add_rules("mode.debug", "mode.release")
 
-add_requires("libhv")
+add_requires("libhv", "libuuid")
+add_includedirs("include")
+
+set_languages("c++20")
 
 target("tobschat++v2")
     set_kind("binary")
     add_files("src/*.cpp")
-    add_packages("libhv")
+    add_packages("libhv", "libuuid")
+
 
 --
 -- If you want to known more usage about xmake, please see https://xmake.io
