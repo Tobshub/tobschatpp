@@ -112,6 +112,7 @@ static map<string, Command> commands = {
 };
 
 static Room GLOBAL("global");
+static map<string, int> NICK_TO_ID;
 
 string handle_command(Context *ctx, Command command, MessageReader *reader) {
   switch (command) {
@@ -122,7 +123,12 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     if (nickname.empty()) {
       return ctx->nickname;
     }
+    if (NICK_TO_ID.find(nickname) != NICK_TO_ID.end()) {
+      return "nickname taken";
+    }
+    NICK_TO_ID.erase(ctx->nickname);
     ctx->nickname = nickname;
+    NICK_TO_ID.insert({ctx->nickname, ctx->id()});
     return "Set nickname: " + nickname;
   }
   case ROOMS: {
@@ -137,7 +143,8 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     string id = trim(reader->read());
     if (id.empty()) {
       if (ctx->room != nullptr) {
-        return format("Current room: #{} ({})", ctx->room->name, ctx->room->id.string());
+        return format("Current room: #{} ({})", ctx->room->name,
+                      ctx->room->id.string());
       }
       return "not in room";
     }
@@ -154,14 +161,23 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     return format("Changed default room: #{}", room->nameOrId());
   }
   case INVITE: {
-    int id = stoi(trim(reader->read()));
+    string idOrNick = trim(reader->read());
+    int id;
+    if (idOrNick[0] == '@') {
+      auto it = NICK_TO_ID.find(idOrNick.substr(1));
+      if (it == NICK_TO_ID.end()) {
+        return "no such user";
+      }
+      id = it->second;
+    } else {
+      id = stoi(idOrNick);
+    }
     auto recv = ACTIVE_CONTEXT.find(id);
-    if (ACTIVE_CONTEXT.find(id) == ACTIVE_CONTEXT.end()) {
+    if (recv == ACTIVE_CONTEXT.end()) {
       return "no such user";
     }
     auto invite_ctx = recv->second;
-    string room_name = ctx->nickname + ", " + invite_ctx->nickname;
-    Room *new_room = new Room(room_name);
+    Room *new_room = new Room(ctx->nickOrId() + "," + invite_ctx->nickOrId());
     ctx->join(new_room);
     invite_ctx->invites.insert({new_room->id, new_room});
     invite_ctx->channel->send(std::format("invite from {} ({})", ctx->nickname,
