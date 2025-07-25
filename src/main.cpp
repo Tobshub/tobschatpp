@@ -36,7 +36,9 @@ public:
     if (it != ACTIVE_CONTEXT.end()) {
       return it->second;
     }
-    return new Context(channel, default_room);
+    auto ctx = new Context(channel, default_room);
+    ctx->join(default_room);
+    return ctx;
   };
   int id() { return channel->id(); }
   void close() {
@@ -220,17 +222,18 @@ int main(int argc, char **argv) {
   ws.onopen = [](const WebSocketChannelPtr &channel,
                  const HttpRequestPtr &req) {
     println(format("connected: @{}", channel->id()));
-    Context::build(channel, nullptr)->join(&GLOBAL);
+    Context::build(channel, &GLOBAL);
   };
 
   ws.onmessage = [](const WebSocketChannelPtr &channel, const string &message) {
-    string res = dispatch_message(Context::build(channel, &GLOBAL), message);
+    string res = dispatch_message(
+        Context::build(channel, &GLOBAL), message);
     channel->send(res);
   };
 
   ws.onclose = [](const WebSocketChannelPtr &channel) {
     println(format("disconnected: @{}", channel->id()));
-    GLOBAL.leave(Context::build(channel, &GLOBAL));
+    GLOBAL.leave(Context::build(channel, nullptr));
   };
 
   WebSocketServer server;
