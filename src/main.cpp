@@ -101,13 +101,14 @@ enum Command {
   ACCEPT,
   LEAVE,
   ROOMS,
+  ROOM,
   MESSAGE,
 };
 
 static map<string, Command> commands = {
-    {"/exit", EXIT},     {"/nickname", NICKNAME}, {"/invite", INVITE},
-    {"/accept", ACCEPT}, {"/rooms", ROOMS},       {"/message", MESSAGE},
-    {"/leave", LEAVE},
+    {"/exit", EXIT},       {"/nickname", NICKNAME}, {"/invite", INVITE},
+    {"/accept", ACCEPT},   {"/rooms", ROOMS},       {"/room", ROOM},
+    {"/message", MESSAGE}, {"/leave", LEAVE},
 };
 
 static Room GLOBAL("global");
@@ -131,6 +132,26 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
       rooms += "\n  " + format("#{} ({})", room->name, room->id.string());
     }
     return rooms;
+  }
+  case ROOM: {
+    string id = trim(reader->read());
+    if (id.empty()) {
+      if (ctx->room != nullptr) {
+        return format("Current room: #{} ({})", ctx->room->name, ctx->room->id.string());
+      }
+      return "not in room";
+    }
+    if (id[0] != '#') {
+      return "invalid room id";
+    }
+    uuid room_id = uuid(id.substr(1));
+    auto it = ctx->rooms.find(room_id);
+    if (it == ctx->rooms.end()) {
+      return "not in room";
+    }
+    auto room = it->second;
+    ctx->room = room;
+    return format("Changed default room: #{}", room->nameOrId());
   }
   case INVITE: {
     int id = stoi(trim(reader->read()));
@@ -174,18 +195,11 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     return "left";
   }
   case MESSAGE: {
-    string id = trim(reader->read());
-    if (id.empty() || id[0] != '#') {
-      return "invalid room id";
+    if (ctx->room == nullptr) {
+      return "not in a room";
     }
-    uuid room_id = uuid(id.substr(1));
-    auto it = ctx->rooms.find(room_id);
-    if (it == ctx->rooms.end()) {
-      return "not in room";
-    }
-    auto room = it->second;
     string message = string_utils::trim(reader->read_to_end());
-    room->broadcast(ctx, message);
+    ctx->room->broadcast(ctx, message);
     return "sent";
   }
   }
@@ -226,8 +240,7 @@ int main(int argc, char **argv) {
   };
 
   ws.onmessage = [](const WebSocketChannelPtr &channel, const string &message) {
-    string res = dispatch_message(
-        Context::build(channel, &GLOBAL), message);
+    string res = dispatch_message(Context::build(channel, &GLOBAL), message);
     channel->send(res);
   };
 
