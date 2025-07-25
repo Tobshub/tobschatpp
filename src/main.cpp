@@ -24,6 +24,7 @@ public:
   string nickname;
   Room *room;
   map<uuid, Room *> invites;
+  map<uuid, Room *> rooms;
   explicit Context(const WebSocketChannelPtr &channel, Room *room)
       : channel(channel), room(room) {
     ACTIVE_CONTEXT.insert_or_assign(channel->id(), this);
@@ -42,6 +43,7 @@ public:
     channel->close();
     delete this;
   };
+  void join(Room *room);
 };
 
 class Room {
@@ -52,33 +54,40 @@ public:
   Room(string name) : name(name) { this->id = uuid::random(); }
   void join(Context *ctx) {
     this->members.insert_or_assign(ctx->id(), ctx);
-    cout << "Room::join: " << this << endl;
-    println(std::format("{} joined #{}", ctx->id(), this->name));
+    println(std::format("@{} joined #{}", ctx->id(), this->name));
   }
 
   void leave(Context *context) { members.erase(context->id()); }
 
   void broadcast(Context *ctx, string message) {
-    println(this->name);
     for (auto &member : members) {
+      string nickOrId =
+          ctx->nickname.empty() ? to_string(ctx->id()) : ctx->nickname;
       string fmt_message =
-          "#" + this->name + ":" + ctx->nickname + ": " + message;
+          "#" + this->id.string() + "@" + nickOrId + ": " + message;
       member.second->channel->send(fmt_message);
     }
   }
 };
+
+// call `room`.join and add room to context room list
+void Context::join(Room *room) {
+  room->join(this);
+  this->rooms.insert_or_assign(room->id, room);
+}
 
 enum Command {
   EXIT,
   NICKNAME,
   INVITE,
   ACCEPT,
+  ROOMS,
+  MESSAGE,
 };
 
-static map<string, Command> commands = {{"/exit", EXIT},
-                                        {"/nickname", NICKNAME},
-                                        {"/invite", INVITE},
-                                        {"/accept", ACCEPT}};
+static map<string, Command> commands = {
+    {"/exit", EXIT},     {"/nickname", NICKNAME}, {"/invite", INVITE},
+    {"/accept", ACCEPT}, {"/rooms", ROOMS},       {"/message", MESSAGE}};
 
 static Room GLOBAL("global");
 
@@ -94,6 +103,13 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     ctx->nickname = nickname;
     return "Set nickname: " + nickname;
   }
+  case ROOMS: {
+    string rooms = "Rooms:";
+    for (auto &room : ctx->rooms) {
+      rooms += "\n  #" + room.second->name;
+    }
+    return rooms;
+  }
   case INVITE: {
     int id = stoi(trim(reader->read()));
     auto recv = ACTIVE_CONTEXT.find(id);
@@ -103,7 +119,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     auto invite_ctx = recv->second;
     string room_name = ctx->nickname + ", " + invite_ctx->nickname;
     Room *new_room = new Room(room_name);
-    new_room->join(ctx);
+    ctx->join(new_room);
     invite_ctx->invites.insert({new_room->id, new_room});
     invite_ctx->channel->send(std::format("invite from {} ({})", ctx->nickname,
                                           new_room->id.string()));
@@ -117,9 +133,24 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     }
     auto room = invite->second;
     cout << "Accept invite Room: " << &room << endl;
-    room->join(ctx);
+    ctx->join(room);
     ctx->invites.erase(invite->first);
     return "invite accepted: " + room->name;
+  }
+  case MESSAGE: {
+    string id = trim(reader->read());
+    if (id.empty() || id[0] != '#') {
+      return "invalid room id";
+    }
+    uuid room_id = uuid(id.substr(1));
+    auto it = ctx->rooms.find(room_id);
+    if (it == ctx->rooms.end()) {
+      return "not in room";
+    }
+    auto room = it->second;
+    string message = string_utils::trim(reader->read_to_end());
+    room->broadcast(ctx, message);
+    return "sent";
   }
   }
   return "unhandled command";
@@ -154,8 +185,8 @@ int main(int argc, char **argv) {
 
   ws.onopen = [](const WebSocketChannelPtr &channel,
                  const HttpRequestPtr &req) {
-    cout << "connected " << channel->id() << endl;
-    GLOBAL.join(Context::build(channel, &GLOBAL));
+    println(format("connected: @{}", channel->id()));
+    Context::build(channel, nullptr)->join(&GLOBAL);
   };
 
   ws.onmessage = [](const WebSocketChannelPtr &channel, const string &message) {
@@ -164,7 +195,7 @@ int main(int argc, char **argv) {
   };
 
   ws.onclose = [](const WebSocketChannelPtr &channel) {
-    cout << "disconnected " << channel->id() << endl;
+    println(format("disconnected: @{}", channel->id()));
     GLOBAL.leave(Context::build(channel, &GLOBAL));
   };
 
