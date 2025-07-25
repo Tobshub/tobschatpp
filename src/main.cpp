@@ -44,6 +44,7 @@ public:
     delete this;
   };
   void join(Room *room);
+  void leave(Room *room);
 };
 
 class Room {
@@ -54,10 +55,13 @@ public:
   Room(string name) : name(name) { this->id = uuid::random(); }
   void join(Context *ctx) {
     this->members.insert_or_assign(ctx->id(), ctx);
-    println(std::format("@{} joined #{}", ctx->id(), this->name));
+    this->broadcast(ctx, std::format("@{} joined #{}", ctx->id(), this->name));
   }
 
-  void leave(Context *context) { members.erase(context->id()); }
+  void leave(Context *ctx) {
+    members.erase(ctx->id());
+    this->broadcast(ctx, std::format("@{} left #{}", ctx->id(), this->name));
+  }
 
   void broadcast(Context *ctx, string message) {
     for (auto &member : members) {
@@ -76,18 +80,26 @@ void Context::join(Room *room) {
   this->rooms.insert_or_assign(room->id, room);
 }
 
+void Context::leave(Room *room) {
+  room->leave(this);
+  this->rooms.erase(room->id);
+}
+
 enum Command {
   EXIT,
   NICKNAME,
   INVITE,
   ACCEPT,
+  LEAVE,
   ROOMS,
   MESSAGE,
 };
 
 static map<string, Command> commands = {
     {"/exit", EXIT},     {"/nickname", NICKNAME}, {"/invite", INVITE},
-    {"/accept", ACCEPT}, {"/rooms", ROOMS},       {"/message", MESSAGE}};
+    {"/accept", ACCEPT}, {"/rooms", ROOMS},       {"/message", MESSAGE},
+    {"/leave", LEAVE},
+};
 
 static Room GLOBAL("global");
 
@@ -136,6 +148,20 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     ctx->join(room);
     ctx->invites.erase(invite->first);
     return "invite accepted: " + room->name;
+  }
+  case LEAVE: {
+    string id = trim(reader->read());
+    if (id.empty() || id[0] != '#') {
+      return "invalid room id";
+    }
+    uuid room_id = uuid(id.substr(1));
+    auto it = ctx->rooms.find(room_id);
+    if (it == ctx->rooms.end()) {
+      return "not in room";
+    }
+    auto room = it->second;
+    ctx->leave(room);
+    return "left";
   }
   case MESSAGE: {
     string id = trim(reader->read());
