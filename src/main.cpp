@@ -45,6 +45,10 @@ public:
   };
   void join(Room *room);
   void leave(Room *room);
+
+  string nickOrId() {
+    return this->nickname.empty() ? to_string(this->id()) : this->nickname;
+  }
 };
 
 class Room {
@@ -55,21 +59,24 @@ public:
   Room(string name) : name(name) { this->id = uuid::random(); }
   void join(Context *ctx) {
     this->members.insert_or_assign(ctx->id(), ctx);
-    this->broadcast(ctx, std::format("@{} joined #{}", ctx->id(), this->name));
+    this->broadcast(ctx,
+                    std::format("@{} joined #{}", ctx->id(), this->nameOrId()));
   }
 
   void leave(Context *ctx) {
     members.erase(ctx->id());
-    this->broadcast(ctx, std::format("@{} left #{}", ctx->id(), this->name));
+    this->broadcast(ctx,
+                    std::format("@{} left #{}", ctx->id(), this->nameOrId()));
+  }
+
+  string nameOrId() {
+    return this->name.empty() ? this->id.string() : this->name;
   }
 
   void broadcast(Context *ctx, string message) {
     for (auto &member : members) {
-      string nickOrId =
-          ctx->nickname.empty() ? to_string(ctx->id()) : ctx->nickname;
-      string fmt_message =
-          "#" + this->id.string() + "@" + nickOrId + ": " + message;
-      member.second->channel->send(fmt_message);
+      member.second->channel->send(
+          format("#{}@{}: {}", this->nameOrId(), ctx->nickOrId(), message));
     }
   }
 };
@@ -117,8 +124,9 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
   }
   case ROOMS: {
     string rooms = "Rooms:";
-    for (auto &room : ctx->rooms) {
-      rooms += "\n  #" + room.second->name;
+    for (auto &it : ctx->rooms) {
+      auto room = it.second;
+      rooms += "\n  " + format("#{} ({})", room->name, room->id.string());
     }
     return rooms;
   }
@@ -147,7 +155,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     cout << "Accept invite Room: " << &room << endl;
     ctx->join(room);
     ctx->invites.erase(invite->first);
-    return "invite accepted: " + room->name;
+    return "invite accepted: " + room->nameOrId();
   }
   case LEAVE: {
     string id = trim(reader->read());
