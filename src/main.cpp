@@ -41,15 +41,19 @@ public:
     return ctx;
   };
   int id() { return channel->id(); }
-  void close() {
-    channel->close();
-    delete this;
-  };
+  void close();
   void join(Room *room);
   void leave(Room *room);
 
   string nickOrId() {
     return this->nickname.empty() ? to_string(this->id()) : this->nickname;
+  }
+
+  void send(string message) {
+    if (this->channel->isClosed()) {
+      return;
+    }
+    this->channel->send(message);
   }
 };
 
@@ -77,11 +81,18 @@ public:
 
   void broadcast(Context *ctx, string message) {
     for (auto &member : members) {
-      member.second->channel->send(
+      member.second->send(
           format("#{}@{}: {}", this->nameOrId(), ctx->nickOrId(), message));
     }
   }
 };
+
+void Context::close() {
+  for (auto &room: this->rooms) {
+    room.second->leave(this);
+  }
+  this->channel->close();
+}
 
 // call `room`.join and add room to context room list
 void Context::join(Room *room) {
@@ -119,6 +130,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
   switch (command) {
   case EXIT:
     ctx->close();
+    return "";
   case NICKNAME: {
     string nickname = string_utils::trim(reader->read_to_end());
     if (nickname.empty()) {
@@ -181,8 +193,8 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     Room *new_room = new Room(ctx->nickOrId() + "," + invite_ctx->nickOrId());
     ctx->join(new_room);
     invite_ctx->invites.insert({new_room->id, new_room});
-    invite_ctx->channel->send(std::format("invite from {} ({})", ctx->nickname,
-                                          new_room->id.string()));
+    invite_ctx->send(std::format("invite from {} ({})", ctx->nickname,
+                                 new_room->id.string()));
     return "invited";
   }
   case ACCEPT: {
@@ -238,7 +250,6 @@ string dispatch_message(Context *ctx, string message) {
   MessageReader reader(message);
   string command_str = reader.read();
   if (command_str.substr(0, 1) != "/") {
-    cout << "ROOM: " << ctx->room << endl;
     if (ctx->room == nullptr) {
       return "not in a room";
     }
@@ -267,13 +278,16 @@ int main(int argc, char **argv) {
   };
 
   ws.onmessage = [](const WebSocketChannelPtr &channel, const string &message) {
-    string res = dispatch_message(Context::build(channel, &GLOBAL), message);
-    channel->send(res);
+    auto ctx = Context::build(channel, &GLOBAL);
+    string res = dispatch_message(ctx, message);
+    ctx->send(res);
   };
 
   ws.onclose = [](const WebSocketChannelPtr &channel) {
-    println(format("disconnected: @{}", channel->id()));
-    GLOBAL.leave(Context::build(channel, nullptr));
+    auto ctx = Context::build(channel, nullptr);
+    println(format("disconnected: @{}", ctx->id()));
+    ACTIVE_CONTEXT.erase(ctx->id());
+    delete ctx;
   };
 
   WebSocketServer server;
