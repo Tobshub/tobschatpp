@@ -103,12 +103,13 @@ enum Command {
   ROOMS,
   ROOM,
   MESSAGE,
+  MEMBERS,
 };
 
 static map<string, Command> commands = {
     {"/exit", EXIT},       {"/nickname", NICKNAME}, {"/invite", INVITE},
     {"/accept", ACCEPT},   {"/rooms", ROOMS},       {"/room", ROOM},
-    {"/message", MESSAGE}, {"/leave", LEAVE},
+    {"/message", MESSAGE}, {"/leave", LEAVE},       {"/members", MEMBERS},
 };
 
 static Room GLOBAL("global");
@@ -217,6 +218,16 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     string message = string_utils::trim(reader->read_to_end());
     ctx->room->broadcast(ctx, message);
     return "sent";
+  }
+  case MEMBERS: {
+    if (ctx->room == nullptr) {
+      return "not in a room";
+    }
+    string members = "Members: ";
+    for (auto it : ctx->room->members) {
+      members += format("\n  @{} ({})", it.second->nickOrId(), it.second->id());
+    }
+    return members;
   }
   }
   return "unhandled command";
