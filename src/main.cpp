@@ -1,7 +1,6 @@
 #include "hv/HttpMessage.h"
 #include "hv/hstring.h"
 #include "message_reader.cpp"
-#include "string_utils.hpp"
 #include <cstdio>
 #include <format>
 #include <hv/WebSocketChannel.h>
@@ -132,7 +131,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     ctx->close();
     return "";
   case NICKNAME: {
-    string nickname = string_utils::trim(reader->read_to_end());
+    string nickname = trim(reader->read_to_end());
     if (nickname.empty()) {
       return ctx->nickname;
     }
@@ -227,7 +226,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     if (ctx->room == nullptr) {
       return "not in a room";
     }
-    string message = string_utils::trim(reader->read_to_end());
+    string message = trim(reader->read_to_end());
     ctx->room->broadcast(ctx, message);
     return "sent";
   }
