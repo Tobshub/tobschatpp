@@ -14,6 +14,14 @@ typedef libuuidpp::uuid uuid;
 
 class Room;
 class Context;
+class NoopChannel;
+
+enum RoomPermission {
+  Owner,
+  Admin,
+  Chat,
+  Notify,
+};
 
 map<int, Context *> ACTIVE_CONTEXT = {};
 
@@ -21,14 +29,19 @@ class Context {
 public:
   const WebSocketChannelPtr &channel;
   string nickname;
+  bool is_active;
   Room *room;
   map<uuid, Room *> invites;
   map<uuid, Room *> rooms;
-  explicit Context(const WebSocketChannelPtr &channel, Room *room)
-      : channel(channel), room(room) {
+  explicit Context(const WebSocketChannelPtr &channel, Room *room,
+                   bool is_active = true)
+      : channel(channel), room(room), is_active(is_active) {
     ACTIVE_CONTEXT.insert_or_assign(channel->id(), this);
   }
-  virtual ~Context() { ACTIVE_CONTEXT.erase(channel->id()); };
+  virtual ~Context() {
+    if (this->is_active)
+      ACTIVE_CONTEXT.erase(channel->id());
+  };
   static Context *build(const WebSocketChannelPtr &channel,
                         Room *default_room) {
     auto it = ACTIVE_CONTEXT.find(channel->id());
@@ -36,12 +49,12 @@ public:
       return it->second;
     }
     auto ctx = new Context(channel, default_room);
-    ctx->join(default_room);
+    ctx->join(default_room, RoomPermission::Chat);
     return ctx;
   };
   int id() { return channel->id(); }
   void close();
-  void join(Room *room);
+  void join(Room *room, RoomPermission);
   void leave(Room *room);
 
   string nickOrId() {
@@ -56,21 +69,42 @@ public:
   }
 };
 
+class NoopChannel : public WebSocketChannel {
+public:
+  NoopChannel() : WebSocketChannel(io()) {}
+  int send(string message) { return 0; }
+  int id() { return 0; }
+};
+
+typedef struct RoomMember {
+  Context *ctx;
+  RoomPermission permission;
+} RoomMember;
+
 class Room {
 public:
   uuid id;
   string name;
-  map<int, Context *> members;
-  Room(string name) : name(name) { this->id = uuid::random(); }
-  void join(Context *ctx) {
-    this->members.insert_or_assign(ctx->id(), ctx);
-    this->broadcast(ctx,
+  Context *ctx;
+  map<int, RoomMember *> members;
+  Room(string name) : name(name) {
+    this->id = uuid::random();
+    auto noop = new NoopChannel();
+    this->ctx = new Context(WebSocketChannelPtr(noop), this, false);
+    this->ctx->nickname = "internal";
+    this->members.insert(
+        {this->ctx->id(), new RoomMember{.ctx = this->ctx,
+                                         .permission = RoomPermission::Owner}});
+  }
+  void join(RoomMember *member) {
+    this->members.insert_or_assign(member->ctx->id(), member);
+    this->broadcast(this->ctx,
                     std::format("@{} joined #{}", ctx->id(), this->nameOrId()));
   }
 
   void leave(Context *ctx) {
     members.erase(ctx->id());
-    this->broadcast(ctx,
+    this->broadcast(this->ctx,
                     std::format("@{} left #{}", ctx->id(), this->nameOrId()));
   }
 
@@ -79,23 +113,31 @@ public:
   }
 
   void broadcast(Context *ctx, string message) {
+    if (!this->members.contains(ctx->id())) {
+      return;
+    }
+    auto sender = this->members.at(ctx->id());
+    if (sender->permission > RoomPermission::Chat) {
+      return;
+    }
     for (auto &member : members) {
-      member.second->send(
+      member.second->ctx->send(
           format("#{}@{}: {}", this->nameOrId(), ctx->nickOrId(), message));
     }
   }
 };
 
 void Context::close() {
-  for (auto &room: this->rooms) {
+  for (auto &room : this->rooms) {
     room.second->leave(this);
   }
   this->channel->close();
 }
 
 // call `room`.join and add room to context room list
-void Context::join(Room *room) {
-  room->join(this);
+void Context::join(Room *room, RoomPermission perm) {
+  auto member = new RoomMember{.ctx = this, .permission = perm};
+  room->join(member);
   this->rooms.insert_or_assign(room->id, room);
 }
 
@@ -114,12 +156,14 @@ enum Command {
   ROOM,
   MESSAGE,
   MEMBERS,
+  RENAME,
 };
 
 static map<string, Command> commands = {
     {"/exit", EXIT},       {"/nickname", NICKNAME}, {"/invite", INVITE},
     {"/accept", ACCEPT},   {"/rooms", ROOMS},       {"/room", ROOM},
     {"/message", MESSAGE}, {"/leave", LEAVE},       {"/members", MEMBERS},
+    {"/rename", RENAME},
 };
 
 static Room GLOBAL("global");
@@ -155,8 +199,8 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     string id = trim(reader->read());
     if (id.empty()) {
       if (ctx->room != nullptr) {
-        return format("Current room: #{} ({})", ctx->room->name,
-                      ctx->room->id.string());
+        return format("Current room: #{} ({}, {})", ctx->room->name,
+                      ctx->room->id.string(), ctx->room->ctx->nickOrId());
       }
       return "not in room";
     }
@@ -171,6 +215,19 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     auto room = it->second;
     ctx->room = room;
     return format("Changed default room: #{}", room->nameOrId());
+  }
+  case RENAME: {
+    if (ctx->room->members.at(ctx->id())->permission < RoomPermission::Admin) {
+      return "insufficient permissions";
+    }
+    string name = trim(reader->read_to_end());
+    if (name.empty()) {
+      return "invalid room name";
+    }
+    ctx->room->name = name;
+    ctx->room->broadcast(ctx->room->ctx,
+                         format("room name changed to {}", name));
+    return "";
   }
   case INVITE: {
     string idOrNick = trim(reader->read());
@@ -190,7 +247,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     }
     auto invite_ctx = recv->second;
     Room *new_room = new Room(ctx->nickOrId() + "," + invite_ctx->nickOrId());
-    ctx->join(new_room);
+    ctx->join(new_room, RoomPermission::Owner);
     invite_ctx->invites.insert({new_room->id, new_room});
     invite_ctx->send(std::format("invite from {} ({})", ctx->nickname,
                                  new_room->id.string()));
@@ -204,7 +261,7 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     }
     auto room = invite->second;
     cout << "Accept invite Room: " << &room << endl;
-    ctx->join(room);
+    ctx->join(room, RoomPermission::Admin);
     ctx->invites.erase(invite->first);
     return "invite accepted: " + room->nameOrId();
   }
@@ -236,7 +293,8 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     }
     string members = "Members: ";
     for (auto it : ctx->room->members) {
-      members += format("\n  @{} ({})", it.second->nickOrId(), it.second->id());
+      members += format("\n  @{} ({})", it.second->ctx->nickOrId(),
+                        it.second->ctx->id());
     }
     return members;
   }
@@ -279,7 +337,8 @@ int main(int argc, char **argv) {
   ws.onmessage = [](const WebSocketChannelPtr &channel, const string &message) {
     auto ctx = Context::build(channel, &GLOBAL);
     string res = dispatch_message(ctx, message);
-    ctx->send(res);
+    if (!res.empty())
+      ctx->send(res);
   };
 
   ws.onclose = [](const WebSocketChannelPtr &channel) {
@@ -296,7 +355,7 @@ int main(int argc, char **argv) {
   server.registerWebSocketService(&ws);
   server.start();
 
-  println("server started");
+  println(format("server started :: {}", server.port));
 
   while (getchar() != '\n')
     ;
