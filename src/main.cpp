@@ -157,6 +157,7 @@ void Context::leave(Room *room) {
 
 enum Command {
   EXIT,
+  COMMANDS,
 
   NICKNAME,
 
@@ -177,7 +178,7 @@ enum Command {
 static map<string, Command> commands = {
     {"/exit", EXIT},       {"/nickname", NICKNAME}, {"/invite", INVITE},   {"/accept", ACCEPT},
     {"/rooms", ROOMS},     {"/room", ROOM},         {"/message", MESSAGE}, {"/leave", LEAVE},
-    {"/members", MEMBERS}, {"/rename", RENAME},     {"/permset", PERMSET},
+    {"/members", MEMBERS}, {"/rename", RENAME},     {"/permset", PERMSET}, {"/commands", COMMANDS}
 };
 
 static Room GLOBAL("global");
@@ -202,6 +203,13 @@ string handle_command(Context *ctx, Command command, MessageReader *reader) {
     case EXIT:
       ctx->close();
       return "";
+    case COMMANDS: {
+      string commands_list = "Commands:";
+      for (auto &it : commands) {
+        commands_list += "\n  " + it.first;
+      }
+      return commands_list;
+    }
     case NICKNAME: {
       string nickname = trim(reader->read_to_end());
       if (nickname.empty()) {
